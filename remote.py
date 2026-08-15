@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 SURROGATE Remote Command API
-Allows Hatch JARVIS to execute commands on the Pi over Tailscale Funnel.
+Allows Hatch JARVIS to execute commands on the Pi.
+Serves on localhost — exposed via Tailscale Funnel when available.
 """
 
 import json
@@ -13,44 +14,44 @@ API_KEY = os.environ.get("SURROGATE_KEY", "")
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        # Suppress default access logs
-        pass
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+        pass  # suppress access logs
+
+    def _send_json(self, code, body):
+        data = json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        self.wfile.flush()
 
     def do_GET(self):
-        """Health check endpoint."""
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({"status": "ok", "service": "surrogate-remote"}).encode())
+        self._send_json(200, {"status": "ok", "service": "surrogate-remote"})
 
     def do_POST(self):
         if self.headers.get("X-API-Key") != API_KEY:
-            self.send_response(401)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "unauthorized"}).encode())
-            return
+            return self._send_json(401, {"error": "unauthorized"})
+
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length))
-        cmd = body.get("cmd", "")
+        cmd = body.get("command") or body.get("cmd", "")
+
         try:
             result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=300
+                cmd, shell=True, capture_output=True, text=True, timeout=300,
             )
-            resp = {
+            self._send_json(200, {
                 "stdout": result.stdout,
                 "stderr": result.stderr,
                 "code": result.returncode,
-            }
+            })
         except subprocess.TimeoutExpired:
-            resp = {"error": "timeout", "code": -1}
+            self._send_json(200, {"error": "timeout", "code": -1})
         except Exception as e:
-            resp = {"error": str(e), "code": -1}
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(resp).encode())
+            self._send_json(200, {"error": str(e), "code": -1})
 
 
 def main():
