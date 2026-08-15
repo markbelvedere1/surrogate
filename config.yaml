@@ -13,7 +13,7 @@ bridge:
 # ---------------------------------------------------------------------------
 wake_word:
   model: "hey_jarvis"       # Built-in model: "hey_jarvis", "alexa", "hey_mycroft"
-  threshold: 0.5            # Detection confidence (0-1). Lower = more sensitive.
+  threshold: 0.8            # Detection confidence (0-1). Lower = more sensitive.
   enable_speex: false       # Disabled — speexdsp_ns not available for aarch64
 
 # ---------------------------------------------------------------------------
