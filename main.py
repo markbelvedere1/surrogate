@@ -4,6 +4,7 @@ SURROGATE — JARVIS Voice Terminal
 Main loop: Wake word -> Record -> Transcribe -> Respond -> Speak
 """
 
+import json
 import logging
 import os
 import signal
@@ -87,17 +88,91 @@ def transcribe(model, wav_path):
 
 
 def process_query(text, config):
-    """Process a voice query and return a response string.
+    """Process a voice query: send to Hatch JARVIS via ntfy and wait for response.
 
-    For now, this echoes back what was said. The Hatch bridge will replace this.
+    When hatch integration is enabled, publishes the transcription to the ntfy
+    response topic as a voice_query. The Hatch hook picks it up, processes it,
+    and sends the spoken response back via the command topic. We poll for that
+    response here.
+
+    Falls back to echo mode when hatch integration is disabled.
     """
-    hatch_cfg = config.get("hatch", {})
-    if hatch_cfg.get("enabled", False):
-        # Future: send to Hatch JARVIS and get response
-        pass
+    import urllib.error
+    import urllib.request
+    import uuid
 
-    # Echo mode — confirm we heard correctly
-    return f"I heard you say: {text}"
+    hatch_cfg = config.get("hatch", {})
+    bridge_cfg = config.get("bridge", {})
+
+    if not hatch_cfg.get("enabled", False):
+        return f"I heard you say: {text}"
+
+    # Generate a unique query ID
+    query_id = str(uuid.uuid4())[:8]
+    rsp_topic = bridge_cfg.get("rsp_topic", "")
+    cmd_topic = bridge_cfg.get("cmd_topic", "")
+
+    if not rsp_topic or not cmd_topic:
+        log.error("Bridge topics not configured")
+        return "Sorry, I'm not fully configured yet."
+
+    # Publish voice query to response topic (Hatch hook polls this)
+    query_payload = json.dumps({
+        "type": "voice_query",
+        "id": query_id,
+        "text": text,
+    }).encode()
+
+    try:
+        req = urllib.request.Request(
+            f"https://ntfy.sh/{rsp_topic}",
+            data=query_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=10)
+        log.info("Voice query published (id=%s)", query_id)
+    except Exception as e:
+        log.error("Failed to publish voice query: %s", e)
+        return "Sorry, I couldn't reach my brain right now. Try again in a moment."
+
+    # Wait for Hatch to respond via the command topic with a speak command
+    # matching our query ID (resp-{query_id})
+    response_id = f"resp-{query_id}"
+    max_wait = 45  # seconds
+    poll_interval = 2  # seconds
+    start_time = time.time()
+    since = str(int(start_time))
+
+    log.info("Waiting for Hatch response (id=%s, max=%ds)...", response_id, max_wait)
+
+    while time.time() - start_time < max_wait:
+        time.sleep(poll_interval)
+        try:
+            poll_req = urllib.request.Request(
+                f"https://ntfy.sh/{cmd_topic}/json?poll=1&since={since}"
+            )
+            with urllib.request.urlopen(poll_req, timeout=10) as resp:
+                for line in resp:
+                    line = line.decode().strip()
+                    if not line:
+                        continue
+                    try:
+                        msg = json.loads(line)
+                        if msg.get("event", "message") != "message":
+                            continue
+                        inner = json.loads(msg.get("message", "{}"))
+                        if inner.get("id") == response_id and inner.get("type") == "speak":
+                            response_text = inner.get("text", "")
+                            log.info("Got Hatch response: %s", response_text[:80])
+                            return response_text
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+        except Exception as e:
+            log.debug("Poll error: %s", e)
+
+    log.warning("Timed out waiting for Hatch response")
+    return "Sorry, I'm taking too long to think. Try asking again."
 
 
 def main():

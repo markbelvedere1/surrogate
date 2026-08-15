@@ -45,6 +45,5 @@ piper:
 # Hatch integration (future — voice queries forwarded to JARVIS)
 # ---------------------------------------------------------------------------
 hatch:
-  enabled: false
-  endpoint: ""
+  enabled: true
   api_key: ""
