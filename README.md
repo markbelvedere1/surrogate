@@ -9,20 +9,20 @@ A Raspberry Pi 5 voice assistant that extends Hatch JARVIS into the physical wor
 
 ## Architecture
 ```
-  [You] → "JARVIS" wake word → Record speech → Whisper STT
-                                                    ↓
-                                              Process query
-                                                    ↓
-                                        Piper TTS → Speaker
+  [You] → "Hey JARVIS" wake word → Record speech → Whisper STT
+                                                        ↓
+                                                  Process query
+                                                        ↓
+                                            Piper TTS → Speaker
 ```
 
 ## Components
-| Component | Implementation | Runs |
-|-----------|---------------|------|
-| Wake Word | Porcupine (Picovoice) — built-in "jarvis" keyword | Local |
-| Speech-to-Text | faster-whisper (base model, int8) | Local |
-| Text-to-Speech | Piper TTS (en_US-lessac-medium) | Local |
-| Remote API | Python HTTP server on port 8080 via Tailscale Funnel | Local |
+| Component | Implementation | Notes |
+|-----------|---------------|-------|
+| Wake Word | OpenWakeWord — built-in "hey jarvis" model | Open source, no API key |
+| Speech-to-Text | faster-whisper (base model, int8) | Runs locally on CPU |
+| Text-to-Speech | Piper TTS (en_US-lessac-medium) | Runs locally |
+| Remote API | Python HTTP server on port 8080 via Tailscale Funnel | For Hatch access |
 
 ## Setup
 
@@ -31,22 +31,18 @@ A Raspberry Pi 5 voice assistant that extends Hatch JARVIS into the physical wor
 - Tailscale installed and Funnel enabled
 - Anker PowerConf S330 plugged into USB
 
-### 1. Get a Picovoice Access Key
-1. Go to [console.picovoice.ai](https://console.picovoice.ai/)
-2. Sign up for a free account
-3. Copy your Access Key
-4. Paste it into `config.yaml` under `picovoice_access_key`
-
-### 2. Install
+### Install
 ```bash
 cd ~/surrogate
 ./install.sh
 ```
 
-### 3. Configure
-Edit `config.yaml` and set your `picovoice_access_key`.
+No API keys required — all components are fully open source.
 
-### 4. Run
+### Configure
+Edit `config.yaml` to adjust wake word sensitivity, audio device, or Whisper model size.
+
+### Run
 ```bash
 # Manual
 cd ~/surrogate && . venv/bin/activate && python3 main.py
@@ -56,7 +52,7 @@ sudo systemctl start surrogate
 sudo systemctl status surrogate
 ```
 
-### 5. Remote API
+### Remote API
 The remote API runs on port 8080 and is exposed via Tailscale Funnel.
 It allows Hatch JARVIS to execute commands on the Pi remotely.
 
@@ -67,7 +63,7 @@ sudo systemctl status surrogate-remote
 # Test
 curl -X POST https://raspberrypi.tailadbc7b.ts.net/ \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: jarvis-surrogate-2026" \
+  -H "X-API-Key: $SURROGATE_KEY" \
   -d '{"cmd": "hostname"}'
 ```
 
@@ -81,8 +77,9 @@ curl -X POST https://raspberrypi.tailadbc7b.ts.net/ \
 ├── main.py              # Main voice pipeline loop
 ├── audio_utils.py       # Audio recording, playback, TTS helpers
 ├── remote.py            # Remote command API server
-├── config.yaml          # Configuration (API keys, audio settings)
-├── install.sh           # One-command setup script
+├── config.yaml          # Configuration (audio, model settings)
+├── install.sh           # One-command setup
+├── deploy.sh            # Update & restart services
 ├── requirements.txt     # Python dependencies
 ├── models/
 │   └── piper/
@@ -91,7 +88,18 @@ curl -X POST https://raspberrypi.tailadbc7b.ts.net/ \
 └── venv/                # Python virtual environment
 ```
 
+## Deployment
+To deploy updated code to the Pi:
+```bash
+# From the Pi
+cd ~/surrogate && bash deploy.sh
+
+# Or remotely via Hatch
+# (uses the remote API to push files and run deploy.sh)
+```
+
 ## Future
-- Hatch bridge: forward transcribed queries to Hatch JARVIS, speak the response
-- Proactive alerts: Hatch pushes notifications → Pi speaks them
-- Multi-room: additional Pi units in different rooms
+- **Hatch bridge**: forward transcribed queries to Hatch JARVIS, speak the response
+- **Proactive alerts**: Hatch pushes notifications → Pi speaks them
+- **Exercise logging**: say "JARVIS, log 85 pushups" and it logs to the workout sheet
+- **Multi-room**: additional Pi units in different rooms

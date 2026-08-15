@@ -7,20 +7,28 @@ set -e
 echo "=== SURROGATE Installer ==="
 
 # System packages
-echo "[1/5] Installing system packages..."
+echo "[1/6] Installing system packages..."
 sudo apt update -qq
 sudo apt install -y -qq alsa-utils python3-pip python3-venv python3-dev git \
-    libportaudio2 libsndfile1 ffmpeg > /dev/null 2>&1
+    libportaudio2 libsndfile1 ffmpeg libspeexdsp-dev > /dev/null 2>&1
 
 # Python venv
-echo "[2/5] Setting up Python environment..."
+echo "[2/6] Setting up Python environment..."
 python3 -m venv venv
 . venv/bin/activate
 pip install --upgrade pip -q
 pip install -r requirements.txt -q
 
+# Download OpenWakeWord models
+echo "[3/6] Downloading OpenWakeWord models..."
+python3 -c "
+import openwakeword
+openwakeword.utils.download_models()
+print('Models downloaded')
+"
+
 # Piper voice model
-echo "[3/5] Downloading Piper TTS voice model..."
+echo "[4/6] Downloading Piper TTS voice model..."
 mkdir -p models/piper
 if [ ! -f models/piper/voice.onnx ]; then
     wget -q https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx -O models/piper/voice.onnx
@@ -28,7 +36,7 @@ if [ ! -f models/piper/voice.onnx ]; then
 fi
 
 # ALSA default
-echo "[4/5] Configuring audio..."
+echo "[5/6] Configuring audio..."
 cat > ~/.asoundrc << 'EOF'
 defaults.pcm.card 0
 defaults.pcm.device 0
@@ -39,8 +47,8 @@ EOF
 amixer -c 0 set PCM 80% > /dev/null 2>&1 || true
 
 # Systemd services
-echo "[5/5] Installing systemd services..."
-sudo tee /etc/systemd/system/surrogate.service > /dev/null << EOF
+echo "[6/6] Installing systemd services..."
+sudo tee /etc/systemd/system/surrogate.service > /dev/null << 'EOF'
 [Unit]
 Description=SURROGATE Voice Pipeline
 After=network.target sound.target
@@ -51,7 +59,6 @@ Type=simple
 User=jarvis
 Group=jarvis
 WorkingDirectory=/home/jarvis/surrogate
-Environment=PICOVOICE_ACCESS_KEY=
 ExecStart=/home/jarvis/surrogate/venv/bin/python3 /home/jarvis/surrogate/main.py
 Restart=always
 RestartSec=5
@@ -62,7 +69,7 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-sudo tee /etc/systemd/system/surrogate-remote.service > /dev/null << EOF
+sudo tee /etc/systemd/system/surrogate-remote.service > /dev/null << 'EOF'
 [Unit]
 Description=SURROGATE Remote Command API
 After=network.target
@@ -85,22 +92,19 @@ WantedBy=multi-user.target
 EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable surrogate-remote
-sudo systemctl enable surrogate
+sudo systemctl enable surrogate-remote surrogate
 
 echo ""
 echo "=== Installation complete ==="
 echo ""
-echo "IMPORTANT: Before starting the voice pipeline:"
-echo "  1. Get a free Picovoice access key at https://console.picovoice.ai/"
-echo "  2. Add it to config.yaml under picovoice_access_key"
-echo "  3. Also update /etc/systemd/system/surrogate.service:"
-echo "     sudo systemctl edit surrogate"
-echo "     Add: Environment=PICOVOICE_ACCESS_KEY=your_key_here"
+echo "No API keys needed! OpenWakeWord is fully open-source."
 echo ""
-echo "Then start:"
+echo "Start services:"
 echo "  sudo systemctl start surrogate-remote"
 echo "  sudo systemctl start surrogate"
 echo ""
 echo "Or run manually:"
 echo "  cd ~/surrogate && . venv/bin/activate && python3 main.py"
+echo ""
+echo "View logs:"
+echo "  journalctl -u surrogate -f"

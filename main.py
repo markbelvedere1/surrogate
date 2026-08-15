@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 
+import numpy as np
 import yaml
 
 logging.basicConfig(
@@ -28,33 +29,26 @@ def load_config():
 
 
 def init_wake_word(config):
-    """Initialize Porcupine wake word detector."""
-    import pvporcupine
-    from pvrecorder import PvRecorder
+    """Initialize OpenWakeWord detector with 'hey jarvis' model."""
+    import openwakeword
+    from openwakeword.model import Model
 
-    access_key = config.get("picovoice_access_key", "") or os.environ.get(
-        "PICOVOICE_ACCESS_KEY", ""
-    )
-    if not access_key:
-        log.error(
-            "Picovoice access key not set! Get a free key at https://console.picovoice.ai/"
-        )
-        log.error("Set it in config.yaml or as PICOVOICE_ACCESS_KEY env var")
-        sys.exit(1)
+    oww_cfg = config.get("wake_word", {})
+    model_name = oww_cfg.get("model", "hey_jarvis")
+    threshold = oww_cfg.get("threshold", 0.5)
+    enable_speex = oww_cfg.get("enable_speex", True)
 
-    keyword = config.get("wake_word", "jarvis")
-    porcupine = pvporcupine.create(
-        access_key=access_key, keywords=[keyword]
+    # Download pre-trained models on first run
+    log.info("Initializing OpenWakeWord (model=%s, threshold=%.2f)...", model_name, threshold)
+    openwakeword.utils.download_models()
+
+    model = Model(
+        wakeword_models=[model_name],
+        enable_speex_noise_suppression=enable_speex,
     )
-    recorder = PvRecorder(
-        frame_length=porcupine.frame_length, device_index=-1
-    )
-    log.info(
-        "Wake word detector ready (keyword=%r, device=%s)",
-        keyword,
-        recorder.selected_device,
-    )
-    return porcupine, recorder
+
+    log.info("Wake word detector ready (model=%s)", model_name)
+    return model, threshold
 
 
 def init_whisper(config):
@@ -111,8 +105,18 @@ def main():
     ready_beep_path = generate_beep(frequency=660, duration=0.1)
 
     # Initialize components
-    porcupine, recorder = init_wake_word(config)
+    oww_model, oww_threshold = init_wake_word(config)
     whisper_model = init_whisper(config)
+
+    # Audio capture settings for wake word detection
+    # OpenWakeWord needs 16kHz 16-bit mono PCM, in 80ms frames (1280 samples)
+    import subprocess
+
+    SAMPLE_RATE = 16000
+    FRAME_MS = 80
+    FRAME_SAMPLES = int(SAMPLE_RATE * FRAME_MS / 1000)  # 1280 samples
+    FRAME_BYTES = FRAME_SAMPLES * 2  # 16-bit = 2 bytes per sample
+    device = audio_cfg.get("device", "plughw:0,0")
 
     # Announce ready
     log.info("=== SURROGATE is online ===")
@@ -134,71 +138,108 @@ def main():
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    # Main loop
-    recorder.start()
-    log.info("Listening for wake word 'JARVIS'...")
+    # Start continuous audio capture for wake word detection
+    log.info("Listening for wake word 'Hey JARVIS'...")
+    mic_proc = subprocess.Popen(
+        [
+            "arecord",
+            "-D", device,
+            "-f", "S16_LE",
+            "-r", str(SAMPLE_RATE),
+            "-c", "1",
+            "-t", "raw",
+            "-q",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
 
     try:
         while running:
-            pcm = recorder.read()
-            keyword_index = porcupine.process(pcm)
+            data = mic_proc.stdout.read(FRAME_BYTES)
+            if not data or len(data) < FRAME_BYTES:
+                break
 
-            if keyword_index >= 0:
-                log.info(">>> Wake word detected!")
-                recorder.stop()
+            # Convert to int16 numpy array for OpenWakeWord
+            audio_frame = np.frombuffer(data, dtype=np.int16)
 
-                # Play acknowledgment beep
-                play_wav(beep_path)
+            # Get wake word prediction
+            prediction = oww_model.predict(audio_frame)
 
-                # Record speech
-                log.info("Recording... (speak now)")
-                wav_path = record_until_silence(
-                    sample_rate=audio_cfg.get("sample_rate", 16000),
-                    channels=audio_cfg.get("channels", 1),
-                    silence_threshold=audio_cfg.get("silence_threshold", 500),
-                    silence_duration=audio_cfg.get("silence_duration", 1.5),
-                    max_seconds=audio_cfg.get("max_record_seconds", 15),
-                )
+            # Check if any model scored above threshold
+            for model_name, score in prediction.items():
+                if score > oww_threshold:
+                    log.info(">>> Wake word detected! (model=%s, score=%.3f)", model_name, score)
 
-                if wav_path is None:
-                    log.warning("No speech detected")
-                    recorder.start()
-                    continue
+                    # Stop mic capture for wake word
+                    mic_proc.terminate()
+                    mic_proc.wait()
 
-                # Transcribe
-                log.info("Transcribing...")
-                text = transcribe(whisper_model, wav_path)
-                os.unlink(wav_path)
+                    # Reset the model's internal state
+                    oww_model.reset()
 
-                if not text:
-                    log.warning("Empty transcription")
-                    recorder.start()
-                    continue
+                    # Play acknowledgment beep
+                    play_wav(beep_path)
 
-                log.info("Heard: %s", text)
+                    # Record speech
+                    log.info("Recording... (speak now)")
+                    wav_path = record_until_silence(
+                        sample_rate=audio_cfg.get("sample_rate", 16000),
+                        channels=audio_cfg.get("channels", 1),
+                        silence_threshold=audio_cfg.get("silence_threshold", 500),
+                        silence_duration=audio_cfg.get("silence_duration", 1.5),
+                        max_seconds=audio_cfg.get("max_record_seconds", 15),
+                        device=device,
+                    )
 
-                # Process and respond
-                response = process_query(text, config)
-                log.info("Response: %s", response)
+                    if wav_path is None:
+                        log.warning("No speech detected")
+                    else:
+                        # Transcribe
+                        log.info("Transcribing...")
+                        text = transcribe(whisper_model, wav_path)
+                        os.unlink(wav_path)
 
-                # Speak response
-                response_wav = text_to_speech(
-                    response,
-                    piper_cfg.get("model_path", "models/piper/voice.onnx"),
-                )
-                play_wav(response_wav)
-                os.unlink(response_wav)
+                        if not text:
+                            log.warning("Empty transcription")
+                        else:
+                            log.info("Heard: %s", text)
 
-                # Resume listening
-                play_wav(ready_beep_path)
-                recorder.start()
-                log.info("Listening for wake word 'JARVIS'...")
+                            # Process and respond
+                            response = process_query(text, config)
+                            log.info("Response: %s", response)
+
+                            # Speak response
+                            response_wav = text_to_speech(
+                                response,
+                                piper_cfg.get("model_path", "models/piper/voice.onnx"),
+                            )
+                            play_wav(response_wav)
+                            os.unlink(response_wav)
+
+                    # Resume listening — restart mic capture
+                    play_wav(ready_beep_path)
+                    log.info("Listening for wake word 'Hey JARVIS'...")
+                    mic_proc = subprocess.Popen(
+                        [
+                            "arecord",
+                            "-D", device,
+                            "-f", "S16_LE",
+                            "-r", str(SAMPLE_RATE),
+                            "-c", "1",
+                            "-t", "raw",
+                            "-q",
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    break  # break inner for-loop, continue outer while
 
     except KeyboardInterrupt:
         pass
     finally:
-        recorder.stop()
-        porcupine.delete()
+        mic_proc.terminate()
+        mic_proc.wait()
         # Clean up temp files
         for p in [beep_path, ready_beep_path]:
             try:

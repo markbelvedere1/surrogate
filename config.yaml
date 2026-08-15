@@ -1,0 +1,32 @@
+# SURROGATE — JARVIS Voice Terminal Configuration
+
+# Wake word detection (OpenWakeWord — no API key needed)
+wake_word:
+  model: "hey_jarvis"       # Built-in model: "hey_jarvis", "alexa", "hey_mycroft"
+  threshold: 0.5            # Detection confidence (0-1). Lower = more sensitive.
+  enable_speex: true        # Speex noise suppression (arm64 Linux supported)
+
+# Audio settings (Anker PowerConf S330)
+audio:
+  device: "plughw:0,0"
+  sample_rate: 16000
+  channels: 1
+  silence_threshold: 500    # RMS below this = silence
+  silence_duration: 1.5     # Seconds of silence to stop recording
+  max_record_seconds: 15    # Max recording length
+
+# Speech-to-text (faster-whisper)
+whisper:
+  model: "base"             # tiny, base, small, medium, large-v2
+  device: "cpu"
+  compute_type: "int8"      # int8 for Pi CPU
+
+# Text-to-speech (Piper)
+piper:
+  model_path: "models/piper/voice.onnx"
+
+# Hatch bridge (future)
+hatch:
+  enabled: false
+  endpoint: ""
+  api_key: ""
