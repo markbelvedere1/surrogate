@@ -121,7 +121,16 @@ def handle_command(payload):
         log.info("speak (id=%s): %s", cmd_id, text[:80])
         # Use full path to venv piper binary
         piper_bin = "/home/jarvis/surrogate/venv/bin/piper"
+        # Play 500ms silence first to wake USB speaker, then the actual speech
         result = execute_command(
+            f'python3 -c "'
+            f'import numpy as np, wave, tempfile; '
+            f's=np.zeros(int(22050*0.5),dtype=np.int16); '
+            f'p=tempfile.mktemp(suffix=\\".wav\\"); '
+            f'w=wave.open(p,\\"wb\\"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050); '
+            f'w.writeframes(s.tobytes()); w.close(); '
+            f'import subprocess; subprocess.run([\\"aplay\\",\\"-D\\",\\"plughw:0,0\\",\\"-q\\",p])'
+            f'" && '
             f'echo {json.dumps(text)} | {piper_bin} '
             f'--model /home/jarvis/surrogate/models/piper/voice.onnx '
             f'--output_file /tmp/speak.wav 2>/dev/null && '

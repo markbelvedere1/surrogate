@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Audio utilities for SURROGATE voice pipeline."""
 
+import os
 import subprocess
 import tempfile
 import wave
@@ -77,8 +78,32 @@ def record_until_silence(
     return tmp.name
 
 
-def play_wav(wav_path, device="plughw:0,0"):
-    """Play a WAV file through the speaker."""
+def play_wav(wav_path, device="plughw:0,0", lead_silence_ms=500):
+    """Play a WAV file through the speaker with optional lead-in silence.
+    
+    USB speakers often drop the first few hundred ms while waking from
+    low-power mode. Prepending a short silence avoids cutting off the start.
+    """
+    if lead_silence_ms > 0:
+        # Generate and play a brief silence to wake the speaker
+        silence_samples = int(22050 * lead_silence_ms / 1000)
+        silence_data = (np.zeros(silence_samples) * 0).astype(np.int16)
+        silence_path = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
+        with wave.open(silence_path, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(22050)
+            wf.writeframes(silence_data.tobytes())
+        try:
+            subprocess.run(
+                ["aplay", "-D", device, "-q", silence_path],
+                check=True, timeout=5,
+            )
+        except Exception:
+            pass
+        finally:
+            os.unlink(silence_path)
+
     subprocess.run(
         ["aplay", "-D", device, "-q", wav_path],
         check=True,
