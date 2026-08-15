@@ -93,13 +93,13 @@ sudo systemctl enable surrogate-remote surrogate-bridge surrogate 2>/dev/null ||
 
 # Kill stale processes
 pkill -f "python3.*bridge.py" 2>/dev/null || true
-pkill -f "python3.*main.py" 2>/dev/null || true
 sleep 1
 
 sudo systemctl restart surrogate-remote 2>/dev/null || echo "WARN: surrogate-remote failed"
 sudo systemctl restart surrogate-bridge 2>/dev/null || echo "WARN: surrogate-bridge failed"
-# surrogate (voice) may fail if audio isn't set up — that's OK
-sudo systemctl restart surrogate 2>/dev/null || echo "WARN: surrogate (voice) failed — OK if no audio device"
+# Voice loop stays stopped until push-to-talk is ready
+sudo systemctl stop surrogate 2>/dev/null || true
+sudo systemctl disable surrogate 2>/dev/null || true
 
 echo ""
 echo "=== Deploy complete ==="
