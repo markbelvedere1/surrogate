@@ -88,12 +88,19 @@ def play_wav(wav_path, device="plughw:0,0"):
 
 def text_to_speech(text, model_path, output_path=None):
     """Convert text to speech using Piper TTS. Returns path to WAV file."""
+    import os
+    import shutil
+
     if output_path is None:
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         output_path = tmp.name
 
+    # Find piper binary: check venv first, then system PATH
+    venv_piper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "piper")
+    piper_bin = venv_piper if os.path.isfile(venv_piper) else (shutil.which("piper") or "piper")
+
     subprocess.run(
-        ["piper", "--model", model_path, "--output_file", output_path],
+        [piper_bin, "--model", model_path, "--output_file", output_path],
         input=text.encode(),
         check=True,
         capture_output=True,
