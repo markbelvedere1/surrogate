@@ -5,8 +5,7 @@
 #
 # Called automatically by auto-update.sh when new code is pulled from GitHub.
 
-set -e
-
+# Don't use set -e — we want services installed even if pip/model steps fail
 SURROGATE_DIR="/home/jarvis/surrogate"
 cd "$SURROGATE_DIR"
 
@@ -17,7 +16,6 @@ echo "$(date): Starting deploy"
 echo "[1/6] Stopping services..."
 sudo systemctl stop surrogate 2>/dev/null || true
 sudo systemctl stop surrogate-bridge 2>/dev/null || true
-# Keep surrogate-remote running if possible (don't kill our own update mechanism)
 
 # Kill any ad-hoc processes (but not remote.py)
 pkill -f "python3.*main.py" 2>/dev/null || true
@@ -26,30 +24,32 @@ sleep 1
 
 # 2. Update Python deps
 echo "[2/6] Updating Python dependencies..."
+if [ ! -d venv ]; then
+    python3 -m venv venv
+fi
 . venv/bin/activate
 
 # Remove old Porcupine packages if present
 pip uninstall -y pvporcupine pvrecorder 2>/dev/null || true
 
-# Install current requirements
-pip install -r requirements.txt -q 2>&1 | tail -5
+# Install current requirements (non-fatal)
+pip install -r requirements.txt -q 2>&1 | tail -5 || echo "  WARN: some pip packages failed (non-fatal)"
 
-# 3. Download OpenWakeWord models if needed
+# 3. Download OpenWakeWord models if needed (non-fatal)
 echo "[3/6] Checking OpenWakeWord models..."
 python3 -c "
 import openwakeword
 openwakeword.utils.download_models()
 print('Models ready')
-" 2>&1 | tail -2
+" 2>&1 | tail -2 || echo "  WARN: OpenWakeWord models not ready (voice loop may fail, bridge still works)"
 
-# 4. Ensure Piper voice model exists
+# 4. Ensure Piper voice model exists (non-fatal)
 echo "[4/6] Checking Piper TTS model..."
 mkdir -p models/piper
 if [ ! -f models/piper/voice.onnx ]; then
     echo "  Downloading Piper voice model..."
-    wget -q https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx -O models/piper/voice.onnx
-    wget -q https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json -O models/piper/voice.onnx.json
-    echo "  Done"
+    wget -q https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx -O models/piper/voice.onnx || echo "  WARN: voice download failed"
+    wget -q https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json -O models/piper/voice.onnx.json || true
 else
     echo "  Voice model present"
 fi
