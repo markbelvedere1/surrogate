@@ -30,7 +30,7 @@ def load_config():
 
 def init_wake_word(config):
     """Initialize OpenWakeWord detector with 'hey jarvis' model."""
-    import openwakeword
+    import importlib.resources
     from openwakeword.model import Model
 
     oww_cfg = config.get("wake_word", {})
@@ -38,12 +38,25 @@ def init_wake_word(config):
     threshold = oww_cfg.get("threshold", 0.5)
     enable_speex = oww_cfg.get("enable_speex", True)
 
-    # Download pre-trained models on first run
     log.info("Initializing OpenWakeWord (model=%s, threshold=%.2f)...", model_name, threshold)
-    openwakeword.utils.download_models()
 
+    # Find bundled model file (e.g. hey_jarvis_v0.1.onnx)
+    import openwakeword
+    oww_pkg_dir = os.path.dirname(openwakeword.__file__)
+    models_dir = os.path.join(oww_pkg_dir, "resources", "models")
+    model_path = None
+    for fname in os.listdir(models_dir):
+        if fname.startswith(model_name) and fname.endswith(".onnx"):
+            model_path = os.path.join(models_dir, fname)
+            break
+
+    if not model_path:
+        log.error("OpenWakeWord model '%s' not found in %s", model_name, models_dir)
+        sys.exit(1)
+
+    log.info("Using model file: %s", model_path)
     model = Model(
-        wakeword_models=[model_name],
+        wakeword_model_paths=[model_path],
         enable_speex_noise_suppression=enable_speex,
     )
 
