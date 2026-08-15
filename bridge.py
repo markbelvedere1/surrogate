@@ -31,11 +31,11 @@ NTFY_BASE = "https://ntfy.sh"
 CMD_TOPIC = "surrogate-cmd-d47386fb4b228ce0"
 RSP_TOPIC = "surrogate-rsp-d47386fb4b228ce0"
 API_KEY = "jarvis-surrogate-2026"
-POLL_INTERVAL = 3  # seconds
+POLL_INTERVAL = 10  # seconds (ntfy.sh free tier rate-limits at ~250 req/hr)
 
 
-def ntfy_publish(topic, payload, timeout=15):
-    """Publish JSON payload to an ntfy topic."""
+def ntfy_publish(topic, payload, timeout=15, retries=3):
+    """Publish JSON payload to an ntfy topic with retry on rate-limit."""
     url = f"{NTFY_BASE}/{topic}"
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
@@ -43,12 +43,22 @@ def ntfy_publish(topic, payload, timeout=15):
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status == 200
-    except Exception as e:
-        log.error("Publish failed: %s", e)
-        return False
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status == 200
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < retries - 1:
+                wait = (attempt + 1) * 5
+                log.warning("Rate limited, retrying in %ds...", wait)
+                time.sleep(wait)
+            else:
+                log.error("Publish failed: %s", e)
+                return False
+        except Exception as e:
+            log.error("Publish failed: %s", e)
+            return False
+    return False
 
 
 def ntfy_poll(topic, since="30s", timeout=10):
