@@ -109,10 +109,12 @@ def handle_command(payload):
     elif cmd_type == "speak":
         text = payload.get("text", "")
         log.info("speak (id=%s): %s", cmd_id, text[:80])
+        # Use full path to venv piper binary
+        piper_bin = "/home/jarvis/surrogate/venv/bin/piper"
         result = execute_command(
-            f'echo "{text}" | /home/jarvis/surrogate/venv/bin/piper '
+            f'echo {json.dumps(text)} | {piper_bin} '
             f'--model /home/jarvis/surrogate/models/piper/voice.onnx '
-            f'--output_file /tmp/speak.wav && '
+            f'--output_file /tmp/speak.wav 2>/dev/null && '
             f'aplay -D plughw:0,0 -q /tmp/speak.wav',
             timeout=30,
         )
