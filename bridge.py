@@ -117,6 +117,11 @@ def handle_command(payload):
         ntfy_publish(RSP_TOPIC, {"id": cmd_id, "pong": True, "code": 0})
 
     elif cmd_type == "speak":
+        # Skip voice-response speak commands — ptt.py handles its own playback.
+        # Only speak commands sent directly (not from the hook agent) go through here.
+        if cmd_id.startswith("resp-"):
+            log.info("speak (id=%s): skipping — ptt.py handles voice responses", cmd_id)
+            return
         text = payload.get("text", "")
         log.info("speak (id=%s): %s", cmd_id, text[:80])
         piper_bin = "/home/jarvis/surrogate/venv/bin/piper"
