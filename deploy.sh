@@ -101,9 +101,37 @@ sudo systemctl restart surrogate-bridge 2>/dev/null || echo "WARN: surrogate-bri
 sudo systemctl stop surrogate 2>/dev/null || true
 sudo systemctl disable surrogate 2>/dev/null || true
 
+# Push-to-talk service
+sudo tee /etc/systemd/system/surrogate-ptt.service > /dev/null << 'EOF'
+[Unit]
+Description=SURROGATE Push-to-Talk Voice Terminal
+After=network.target sound.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/home/jarvis/surrogate
+ExecStart=/home/jarvis/surrogate/venv/bin/python3 /home/jarvis/surrogate/ptt.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable surrogate-ptt 2>/dev/null || true
+pkill -f "python3.*ptt.py" 2>/dev/null || true
+sleep 1
+sudo systemctl restart surrogate-ptt 2>/dev/null || echo "WARN: surrogate-ptt failed"
+
 echo ""
 echo "=== Deploy complete ==="
-for svc in surrogate-remote surrogate-bridge surrogate; do
+for svc in surrogate-remote surrogate-bridge surrogate-ptt; do
     STATUS=$(sudo systemctl is-active $svc 2>/dev/null || echo "unknown")
     echo "  $svc: $STATUS"
 done
