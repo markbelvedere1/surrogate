@@ -149,48 +149,61 @@ def wait_for_button_action(device_path, key_code, long_press_threshold=1.5,
                             tone_path=None, play_device="plughw:0,0"):
     """Wait for button press and determine short vs long press.
 
-    Measures time between key-down and key-up events. When the hold
-    duration crosses long_press_threshold, plays a sustained tone so
-    the user knows they've entered talk mode.
+    Uses evdev InputDevice for reliable event handling across repeated
+    calls.  Drains stale/buffered events before waiting for fresh input.
 
     Returns:
         "mailbox" for quick press  (< long_press_threshold)
         "talk"    for long press   (>= long_press_threshold)
     """
-    fd = os.open(device_path, os.O_RDONLY)
+    from evdev import InputDevice, ecodes
+
+    dev = InputDevice(device_path)
     try:
-        # Wait for key down (EV_KEY, value=1)
+        # ── Drain stale events so old presses don't ghost ──
         while True:
-            data = os.read(fd, 24)
-            if len(data) < 24:
-                continue
-            _sec, _usec, ev_type, ev_code, ev_value = struct.unpack("llHHi", data)
-            if ev_type == 1 and ev_code == key_code and ev_value == 1:
+            r, _, _ = select.select([dev], [], [], 0)
+            if r:
+                for _ in dev.read():
+                    pass
+            else:
                 break
 
-        press_start = time.time()
+        log.info("Waiting for button press on %s (code %d)...",
+                 device_path, key_code)
+
+        # ── State machine ──
+        press_start = None
         tone_played = False
 
-        # Wait for key up, watching for threshold crossing
         while True:
-            r, _, _ = select.select([fd], [], [], 0.05)
+            r, _, _ = select.select([dev], [], [], 0.05)
             if r:
-                data = os.read(fd, 24)
-                if len(data) == 24:
-                    _sec, _usec, ev_type, ev_code, ev_value = struct.unpack(
-                        "llHHi", data
-                    )
-                    # Key released (value=0) — ignore auto-repeat (value=2)
-                    if ev_type == 1 and ev_code == key_code and ev_value == 0:
+                for event in dev.read():
+                    if event.type != ecodes.EV_KEY or event.code != key_code:
+                        continue
+                    if event.value == 2:          # auto-repeat → ignore
+                        continue
+
+                    if event.value == 1 and press_start is None:
+                        # ── Key down ──
+                        press_start = time.time()
+                        tone_played = False
+                        log.debug("Button down")
+
+                    elif event.value == 0 and press_start is not None:
+                        # ── Key up ──
                         duration = time.time() - press_start
-                        mode = "talk" if duration >= long_press_threshold else "mailbox"
-                        log.info(
-                            "Button held %.2fs → %s mode", duration, mode
-                        )
+                        mode = ("talk" if duration >= long_press_threshold
+                                else "mailbox")
+                        log.info("Button held %.2fs → %s mode",
+                                 duration, mode)
                         return mode
 
             # Play sustained tone when threshold is crossed
-            if not tone_played and time.time() - press_start >= long_press_threshold:
+            if (press_start is not None
+                    and not tone_played
+                    and time.time() - press_start >= long_press_threshold):
                 tone_played = True
                 log.info("Long-press threshold crossed — playing talk tone")
                 if tone_path:
@@ -200,7 +213,7 @@ def wait_for_button_action(device_path, key_code, long_press_threshold=1.5,
                         stderr=subprocess.DEVNULL,
                     )
     finally:
-        os.close(fd)
+        dev.close()
 
 
 def main():
@@ -251,12 +264,6 @@ def main():
     )
     play_wav(startup_wav)
     os.unlink(startup_wav)
-
-    log.info(
-        "Waiting for button press on %s (code %d)...",
-        INPUT_DEVICE,
-        BUTTON_CODE,
-    )
 
     while running:
         try:
