@@ -151,3 +151,48 @@ def generate_beep(frequency=880, duration=0.15, sample_rate=22050):
         wf.setframerate(sample_rate)
         wf.writeframes(wave_data.tobytes())
     return tmp.name
+
+
+def generate_double_beep(frequency=880, duration=0.1, gap=0.08, sample_rate=22050):
+    """Generate a double-beep WAV file for mailbox mode. Returns path."""
+    beep_samples = int(sample_rate * duration)
+    gap_samples = int(sample_rate * gap)
+    fade = min(int(sample_rate * 0.005), max(beep_samples // 4, 1))
+
+    t = np.linspace(0, duration, beep_samples, endpoint=False)
+    envelope = np.ones(beep_samples)
+    if fade > 0 and beep_samples > 2 * fade:
+        envelope[:fade] = np.linspace(0, 1, fade)
+        envelope[-fade:] = np.linspace(1, 0, fade)
+    beep = (np.sin(2 * np.pi * frequency * t) * envelope * 16000).astype(np.int16)
+
+    gap_data = np.zeros(gap_samples, dtype=np.int16)
+    wave_data = np.concatenate([beep, gap_data, beep])
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    with wave.open(tmp.name, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(wave_data.tobytes())
+    return tmp.name
+
+
+def generate_sustained_tone(frequency=660, duration=0.4, sample_rate=22050):
+    """Generate a sustained tone for long-press threshold indication. Returns path."""
+    samples = int(sample_rate * duration)
+    t = np.linspace(0, duration, samples, endpoint=False)
+    fade = min(int(sample_rate * 0.02), max(samples // 4, 1))
+    envelope = np.ones(samples)
+    if fade > 0 and samples > 2 * fade:
+        envelope[:fade] = np.linspace(0, 1, fade)
+        envelope[-fade:] = np.linspace(1, 0, fade)
+    wave_data = (np.sin(2 * np.pi * frequency * t) * envelope * 16000).astype(np.int16)
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    with wave.open(tmp.name, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(wave_data.tobytes())
+    return tmp.name
