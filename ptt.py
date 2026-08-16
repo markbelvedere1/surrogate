@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """
-SURROGATE — Push-to-Talk Voice Terminal (v2: Two-Mode Button Interface)
+SURROGATE — Push-to-Talk Voice Terminal (v3: Double-Tap Button Interface)
 
-Button behavior on the Anker PowerConf S330 play button:
-  Quick press (< 1.5s) = Mailbox mode — deliver queued alerts
-  Long press  (≥ 1.5s) = Talk mode — record, transcribe, send to Hatch, speak response
+Button behavior on the Anker PowerConf S330 play button (code 164):
+  Single tap  = Mailbox mode — deliver queued alerts
+  Double tap  = Talk mode — record, transcribe, send to Hatch, speak response
+
+The Anker's capacitive touch buttons send key-down + key-up nearly
+simultaneously (0.00s apart).  Long presses produce NO events at all.
+So we detect taps (key-down events) and count them.
 
 Audio cues:
-  - Long press threshold crossed: sustained tone (660 Hz, 0.4s) — "you're in talk mode"
-  - On release (talk mode): listen beep — "start speaking"
-  - Short press release: double-beep — "checking mailbox"
+  - Double tap detected: sustained tone (660 Hz, 0.4s) — "you're in talk mode"
+  - After tone: listen beep — "start speaking"
+  - Single tap: double-beep — "checking mailbox"
 """
 
 import json
@@ -17,7 +21,6 @@ import logging
 import os
 import select
 import signal
-import struct
 import subprocess
 import sys
 import tempfile
@@ -36,7 +39,7 @@ log = logging.getLogger("ptt")
 # Button config — Anker PowerConf S330 on /dev/input/event1
 INPUT_DEVICE = "/dev/input/event1"
 BUTTON_CODE = 164  # KEY_PLAYPAUSE
-LONG_PRESS_THRESHOLD = 1.5  # seconds
+DOUBLE_TAP_WINDOW = 0.6  # seconds to wait for a second tap
 
 
 def load_config():
@@ -145,22 +148,30 @@ def process_query(text, config):
     return "Sorry, I'm taking too long to think. Try asking again."
 
 
-def wait_for_button_action(device_path, key_code, long_press_threshold=1.5,
-                            tone_path=None, play_device="plughw:0,0"):
-    """Wait for button press and determine short vs long press.
+def wait_for_button_action(device_path, key_code,
+                           double_tap_window=0.6):
+    """Wait for button tap(s) and determine single vs double tap.
 
-    Uses evdev InputDevice for reliable event handling across repeated
-    calls.  Drains stale/buffered events before waiting for fresh input.
+    The Anker PowerConf S330's capacitive buttons send key-down and
+    key-up events nearly simultaneously (0.00s hold time).  Long
+    presses produce NO events at all.  So we count key-down events
+    (taps) instead of measuring hold duration.
+
+    Algorithm:
+      1. Wait for first key-down (first tap).
+      2. Wait up to *double_tap_window* seconds for a second key-down.
+      3. Second tap within the window → "talk" (double-tap).
+         No second tap → "mailbox" (single tap).
 
     Returns:
-        "mailbox" for quick press  (< long_press_threshold)
-        "talk"    for long press   (>= long_press_threshold)
+        "mailbox" for single tap
+        "talk"    for double tap
     """
     from evdev import InputDevice, ecodes
 
     dev = InputDevice(device_path)
     try:
-        # ── Drain stale events so old presses don't ghost ──
+        # ── Drain stale/buffered events ──
         while True:
             r, _, _ = select.select([dev], [], [], 0)
             if r:
@@ -172,46 +183,36 @@ def wait_for_button_action(device_path, key_code, long_press_threshold=1.5,
         log.info("Waiting for button press on %s (code %d)...",
                  device_path, key_code)
 
-        # ── State machine ──
-        press_start = None
-        tone_played = False
-
+        # ── Wait for first tap (key-down, value=1) ──
         while True:
-            r, _, _ = select.select([dev], [], [], 0.05)
+            r, _, _ = select.select([dev], [], [], 1.0)
             if r:
                 for event in dev.read():
-                    if event.type != ecodes.EV_KEY or event.code != key_code:
-                        continue
-                    if event.value == 2:          # auto-repeat → ignore
-                        continue
-
-                    if event.value == 1 and press_start is None:
-                        # ── Key down ──
-                        press_start = time.time()
-                        tone_played = False
-                        log.debug("Button down")
-
-                    elif event.value == 0 and press_start is not None:
-                        # ── Key up ──
-                        duration = time.time() - press_start
-                        mode = ("talk" if duration >= long_press_threshold
-                                else "mailbox")
-                        log.info("Button held %.2fs → %s mode",
-                                 duration, mode)
-                        return mode
-
-            # Play sustained tone when threshold is crossed
-            if (press_start is not None
-                    and not tone_played
-                    and time.time() - press_start >= long_press_threshold):
-                tone_played = True
-                log.info("Long-press threshold crossed — playing talk tone")
-                if tone_path:
-                    subprocess.Popen(
-                        ["aplay", "-D", play_device, "-q", tone_path],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
+                    if (event.type == ecodes.EV_KEY
+                            and event.code == key_code
+                            and event.value == 1):
+                        log.debug("First tap detected")
+                        # ── Wait for possible second tap ──
+                        deadline = time.time() + double_tap_window
+                        while time.time() < deadline:
+                            remaining = deadline - time.time()
+                            if remaining <= 0:
+                                break
+                            r2, _, _ = select.select(
+                                [dev], [], [], min(remaining, 0.05)
+                            )
+                            if r2:
+                                for ev2 in dev.read():
+                                    if (ev2.type == ecodes.EV_KEY
+                                            and ev2.code == key_code
+                                            and ev2.value == 1):
+                                        log.info(
+                                            "Double tap detected → talk mode"
+                                        )
+                                        return "talk"
+                        # Timeout — no second tap
+                        log.info("Single tap detected → mailbox mode")
+                        return "mailbox"
     finally:
         dev.close()
 
@@ -253,13 +254,10 @@ def main():
     signal.signal(signal.SIGINT, handle_signal)
 
     # Announce ready
-    log.info("=== SURROGATE Push-to-Talk v2 online ===")
-    log.info(
-        "Quick press = mailbox | Long press (%.1fs) = talk",
-        LONG_PRESS_THRESHOLD,
-    )
+    log.info("=== SURROGATE Push-to-Talk v3 online ===")
+    log.info("Single tap = mailbox | Double tap = talk")
     startup_wav = text_to_speech(
-        "JARVIS online. Quick press for alerts. Long press to talk.",
+        "JARVIS online. Single tap for alerts. Double tap to talk.",
         piper_cfg.get("model_path", "models/piper/voice.onnx"),
     )
     play_wav(startup_wav)
@@ -267,18 +265,16 @@ def main():
 
     while running:
         try:
-            # Wait for button press and determine mode
+            # Wait for button tap(s) and determine mode
             action = wait_for_button_action(
                 INPUT_DEVICE,
                 BUTTON_CODE,
-                long_press_threshold=LONG_PRESS_THRESHOLD,
-                tone_path=talk_tone,
-                play_device=device,
+                double_tap_window=DOUBLE_TAP_WINDOW,
             )
 
             if action == "mailbox":
                 # ── Mailbox Mode ──────────────────────────────
-                log.info("Mailbox mode (short press)")
+                log.info("Mailbox mode (single tap)")
                 play_wav(mailbox_beep)
 
                 # Stub: no alert queue yet — speak placeholder
@@ -294,7 +290,10 @@ def main():
 
             elif action == "talk":
                 # ── Talk Mode ─────────────────────────────────
-                log.info("Talk mode (long press)")
+                log.info("Talk mode (double tap)")
+
+                # Play sustained tone to confirm talk mode
+                play_wav(talk_tone)
 
                 # Play listen beep to signal "start speaking"
                 play_wav(listen_beep)
