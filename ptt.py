@@ -102,7 +102,7 @@ def process_query(text, config):
 
     # Wait for Hatch to respond via the command topic
     response_id = f"resp-{query_id}"
-    max_wait = 45
+    max_wait = 90
     poll_interval = 2
     start_time = time.time()
     since = str(int(start_time))
@@ -232,6 +232,16 @@ def main():
                 continue
 
             log.info("Heard: %s", text)
+
+            # Speak acknowledgment so Mark knows what was heard
+            ack_text = f"I heard: {text}. Working on it."
+            log.info("Speaking acknowledgment: %s", ack_text)
+            ack_wav = text_to_speech(
+                ack_text,
+                piper_cfg.get("model_path", "models/piper/voice.onnx"),
+            )
+            play_wav(ack_wav)
+            os.unlink(ack_wav)
 
             # Process query and get response
             response = process_query(text, config)
